@@ -174,7 +174,7 @@ for feta in range(len(paths)):
                 dset_test,
                 batch_size=1,#This is irrelative to the args batch size parameter
                 shuffle =False,
-                num_workers=1)
+                num_workers=0)
 
 
 

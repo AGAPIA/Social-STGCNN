@@ -54,7 +54,7 @@ def fde(predAll,targetAll,count_):
 
 
 def seq_to_nodes(seq_,max_nodes = 88):
-    seq_ = seq_.squeeze()
+    seq_ = seq_.squeeze(0)
     seq_len = seq_.shape[2]
     
     V = np.zeros((seq_len,max_nodes,2))
@@ -70,8 +70,9 @@ def nodes_rel_to_nodes_abs(nodes,init_node):
     for s in range(nodes.shape[0]):
         for ped in range(nodes.shape[1]):
             nodes_[s,ped,:] = np.sum(nodes[:s+1,ped,:],axis=0) + init_node[ped,:]
-
-    return nodes_.squeeze()
+    if len(nodes_.shape) > 3 and nodes_.shape[0] == 1:
+        nodes_ = nodes_.squeeze(0)
+    return nodes_
 
 def closer_to_zero(current,new_v):
     dec =  min([(abs(current),current),(abs(new_v),new_v)])[1]

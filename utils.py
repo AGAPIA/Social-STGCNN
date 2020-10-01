@@ -18,7 +18,7 @@ from numpy import linalg as LA
 import networkx as nx
 from tqdm import tqdm
 import time
-
+import pickle
 
 def anorm(p1,p2): 
     NORM = math.sqrt((p1[0]-p2[0])**2+ (p1[1]-p2[1])**2)
@@ -27,8 +27,12 @@ def anorm(p1,p2):
     return 1/(NORM)
                 
 def seq_to_graph(seq_,seq_rel,norm_lap_matr = True):
-    seq_ = seq_.squeeze()
-    seq_rel = seq_rel.squeeze()
+    if len(seq_.shape) > 3:
+        seq_ = seq_.squeeze(0)
+
+    if len(seq_rel.shape) > 3:
+        seq_rel = seq_rel.squeeze(0)
+
     seq_len = seq_.shape[2]
     max_nodes = seq_.shape[0]
 
@@ -69,25 +73,32 @@ def poly_fit(traj, traj_len, threshold):
         return 1.0
     else:
         return 0.0
-def read_file(_path, delim='\t'):
+
+
+def read_file(_path, delim="\t"):
     data = []
-    if delim == 'tab':
-        delim = '\t'
-    elif delim == 'space':
-        delim = ' '
-    with open(_path, 'r') as f:
+    if delim == "tab":
+        delim = "\t"
+    elif delim == "space":
+        delim = " "
+
+    filename, file_extension = os.path.splitext(_path)
+    if file_extension == '.pkl' or 'gitignore' in _path:
+        return False, None
+    with open(_path, "r") as f:
         for line in f:
             line = line.strip().split(delim)
             line = [float(i) for i in line]
             data.append(line)
-    return np.asarray(data)
+    return True, np.asarray(data)
 
+TRAJECTORY_DATASET_CACHEFILENAME = "dataset_cache.pkl"
 
 class TrajectoryDataset(Dataset):
     """Dataloder for the Trajectory datasets"""
     def __init__(
-        self, data_dir, obs_len=8, pred_len=8, skip=1, threshold=0.002,
-        min_ped=1, delim='\t',norm_lap_matr = True):
+        self, data_dir, batchSize, obs_len=8, pred_len=8, skip=1, threshold=0.002,
+        min_ped=1, delim='\t',norm_lap_matr = True, useCache=False,):
         """
         Args:
         - data_dir: Directory containing dataset files in the format
@@ -111,6 +122,14 @@ class TrajectoryDataset(Dataset):
         self.delim = delim
         self.norm_lap_matr = norm_lap_matr
 
+        maxNumPedestriansConsidered = 0
+
+        cacheFilePath = os.path.join(data_dir, TRAJECTORY_DATASET_CACHEFILENAME)
+        if useCache and os.path.exists(cacheFilePath):
+            logging.info("Reloading cached data for dataset given..")
+            with open(cacheFilePath, "rb") as testFile:
+                cachedData = pickle.load(testFile)
+
         all_files = os.listdir(self.data_dir)
         all_files = [os.path.join(self.data_dir, _path) for _path in all_files]
         num_peds_in_seq = []
@@ -119,7 +138,10 @@ class TrajectoryDataset(Dataset):
         loss_mask_list = []
         non_linear_ped = []
         for path in all_files:
-            data = read_file(path, delim)
+            res, data = read_file(path, delim)
+            if res is False:
+                continue
+
             frames = np.unique(data[:, 0]).tolist()
             frame_data = []
             for frame in frames:
@@ -145,8 +167,14 @@ class TrajectoryDataset(Dataset):
                     curr_ped_seq = np.around(curr_ped_seq, decimals=4)
                     pad_front = frames.index(curr_ped_seq[0, 0]) - idx
                     pad_end = frames.index(curr_ped_seq[-1, 0]) - idx + 1
+
+                    # We have to check if the pedestrian id appeared for the desired number of frames
                     if pad_end - pad_front != self.seq_len:
                         continue
+
+                    if len(curr_ped_seq) < self.seq_len:
+                        continue
+
                     curr_ped_seq = np.transpose(curr_ped_seq[:, 2:])
                     curr_ped_seq = curr_ped_seq
                     # Make coordinates relative
@@ -162,6 +190,9 @@ class TrajectoryDataset(Dataset):
                     curr_loss_mask[_idx, pad_front:pad_end] = 1
                     num_peds_considered += 1
 
+                    if num_peds_considered > 10:
+                        break
+
                 if num_peds_considered > min_ped:
                     non_linear_ped += _non_linear_ped
                     num_peds_in_seq.append(num_peds_considered)
@@ -169,11 +200,26 @@ class TrajectoryDataset(Dataset):
                     seq_list.append(curr_seq[:num_peds_considered])
                     seq_list_rel.append(curr_seq_rel[:num_peds_considered])
 
+                    if maxNumPedestriansConsidered < num_peds_considered:
+                        maxNumPedestriansConsidered = num_peds_considered
+
         self.num_seq = len(seq_list)
         seq_list = np.concatenate(seq_list, axis=0)
         seq_list_rel = np.concatenate(seq_list_rel, axis=0)
         loss_mask_list = np.concatenate(loss_mask_list, axis=0)
         non_linear_ped = np.asarray(non_linear_ped)
+
+        if useCache:
+            print("Saving cached data for dataset given..")
+            cachedData = {'seq_list': seq_list,
+                          'seq_list_rel': seq_list_rel,
+                          'loss_mask_list': loss_mask_list,
+                          'non_linear_ped': non_linear_ped,
+                          'num_peds_in_seq': num_peds_in_seq
+                          }
+
+            with open(cacheFilePath, "wb") as testFile:
+                pickle.dump(cachedData, testFile)
 
         # Convert numpy -> Torch Tensor
         self.obs_traj = torch.from_numpy(
@@ -191,6 +237,21 @@ class TrajectoryDataset(Dataset):
             (start, end)
             for start, end in zip(cum_start_idx, cum_start_idx[1:])
         ]
+
+        self.num_seq = len(self.seq_start_end)
+
+        print("Dataset processed. Found that there are {0} sequences and a maximum of {1} agents per sequence".format(self.num_seq, maxNumPedestriansConsidered))
+        maxPerBatch = 0
+        prevBatchEnd = 0
+        for thisBatchStart in range(0, len(self.seq_start_end), batchSize):
+            thisBatchEnd = thisBatchStart + batchSize
+            numInThisBatch = np.sum([(end - start) for start, end in self.seq_start_end[prevBatchEnd:thisBatchEnd]])
+            prevBatchEnd = thisBatchEnd
+            if numInThisBatch > maxPerBatch:
+                maxPerBatch = numInThisBatch
+
+        print("Max per batch {0}".format(maxPerBatch))
+
         #Convert to Graphs 
         self.v_obs = [] 
         self.A_obs = [] 

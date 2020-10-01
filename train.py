@@ -39,7 +39,7 @@ parser.add_argument('--kernel_size', type=int, default=3)
 
 #Data specifc paremeters
 parser.add_argument('--obs_seq_len', type=int, default=8)
-parser.add_argument('--pred_seq_len', type=int, default=12)
+parser.add_argument('--pred_seq_len', type=int, default=8)
 parser.add_argument('--dataset', default='eth',
                     help='eth,hotel,univ,zara1,zara2')    
 
@@ -82,6 +82,7 @@ data_set = './datasets/'+args.dataset+'/'
 
 dset_train = TrajectoryDataset(
         data_set+'train/',
+        args.batch_size,
         obs_len=obs_seq_len,
         pred_len=pred_seq_len,
         skip=1,norm_lap_matr=True)
@@ -95,6 +96,7 @@ loader_train = DataLoader(
 
 dset_val = TrajectoryDataset(
         data_set+'val/',
+        args.batch_size,
         obs_len=obs_seq_len,
         pred_len=pred_seq_len,
         skip=1,norm_lap_matr=True)
@@ -103,7 +105,7 @@ loader_val = DataLoader(
         dset_val,
         batch_size=1, #This is irrelative to the args batch size parameter
         shuffle =False,
-        num_workers=1)
+        num_workers=0)
 
 
 #Defining the model 
